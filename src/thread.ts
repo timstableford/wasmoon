@@ -20,6 +20,7 @@ export default class Thread {
 
     private parent?: Thread
     private continuance?: number
+    //private pendingPromises: Array<Promise<any>> = []
 
     public constructor(cmodule: LuaWasm, address: number, parent?: Thread) {
         this.cmodule = cmodule
@@ -68,20 +69,47 @@ export default class Thread {
     public async run(argCount = 0): Promise<LuaResumeResult> {
         let resumeResult: LuaResumeResult = this.resume(argCount)
         while (resumeResult.result === LuaReturn.Yield) {
+            console.log('run resumeResult yield', this.address, resumeResult)
+            this.dumpStack()
+
             if (resumeResult.resultCount > 0) {
+                //const yieldStartTop = this.getTop()
                 const lastValue = this.getValue(-1)
-                if (lastValue === Promise.resolve(lastValue)) {
-                    await lastValue
-                }
                 this.pop(resumeResult.resultCount)
+                if (lastValue === Promise.resolve(lastValue)) {
+                    console.log('yielded value', this.address, await lastValue)
+                } else {
+                    console.warn('Yield with non-promise value')
+                    this.dumpStack()
+                }
+                // If resultCount > 0 then the stack will look like the following
+                // if this thread does odd things elsewhere.
+                // 1. function
+                // 2. pending promise
+                // 3. function result
+                // Move the pending promise back to the end.
+                //console.log('stack prerotate', this.address, this.getTop(), yieldStartTop)
+                //this.dumpStack()
+                // +1 because that's where the thread is
+                /*console.log('rotate args', this.address, yieldStartTop + 1, this.getTop() - yieldStartTop + 1)
+                this.cmodule.lua_rotate(this.address, yieldStartTop + 1, this.getTop() - yieldStartTop - 1);
+                console.log('stack postrotate', this.address)
+                this.dumpStack()*/
+                //console.log('run pop', this.address, resumeResult.resultCount)
+
+            } else {
+                console.warn('Yield with no results')
             }
 
             resumeResult = this.resume(0)
         }
+        console.log('run resumeResult ok', this.address, resumeResult)
+        this.dumpStack()
         return resumeResult
     }
 
     public pop(count: number): void {
+        console.log('pop', this.address, count)
         this.cmodule.lua_pop(this.address, count)
     }
 
@@ -128,7 +156,10 @@ export default class Thread {
         return values
     }
 
-    public pushValue(value: any, options: Partial<{ _done?: Record<string, number>; reference?: boolean }> = {}): void {
+    public pushValue(
+        value: any,
+        options: Partial<{ _done?: Record<string, number>; reference?: boolean; await?: boolean; raw?: boolean }> = {},
+    ): void {
         const { value: target, decorations } = this.getValueDecorations(value)
 
         const type = typeof target
@@ -158,6 +189,19 @@ export default class Thread {
         } else if (type === 'object') {
             if (target instanceof Thread) {
                 this.cmodule.lua_pushthread(target.address)
+            } else if (Promise.resolve(target) === target) {
+                const pointer = this.cmodule.ref(target)
+                const userDataPointer = this.cmodule.lua_newuserdatauv(this.address, PointerSize, 0)
+                this.cmodule.module.setValue(userDataPointer, pointer, '*')
+
+                if (LuaType.Nil === this.cmodule.luaL_getmetatable(this.address, LuaMetatables.Promise)) {
+                    // Pop the pushed nil value and the user data
+                    this.cmodule.unref(pointer)
+                    this.pop(2)
+                    throw new Error(`metatable not found: ${LuaMetatables.Promise}`)
+                }
+
+                this.cmodule.lua_setmetatable(this.address, -2)
             } else {
                 const table = this.getTop() + 1
 
@@ -192,16 +236,22 @@ export default class Thread {
         } else if (type === 'function') {
             const pointer = this.cmodule.module.addFunction((calledL: LuaState) => {
                 const argsQuantity = this.cmodule.lua_gettop(calledL)
-                const args = []
-
                 const thread = this.stateToThread(calledL)
+                const args = options.raw ? [thread] : []
+
                 for (let i = 1; i <= argsQuantity; i++) {
                     args.push(thread.getValue(i, undefined, { raw: decorations?.rawArguments?.includes(i - 1) }))
                 }
 
                 const result = target(...args)
 
-                if (Promise.resolve(result) !== result) {
+                if (Promise.resolve(result) !== result || !options['await']) {
+                    if (options.raw) {
+                        if (typeof result !== 'number') {
+                            throw new Error('Must return a number when using raw functions')
+                        }
+                        return result
+                    }
                     if (result === undefined) {
                         return 0
                     }
@@ -228,7 +278,18 @@ export default class Thread {
                         this.continuance = undefined
                     }
 
+                    console.log('calledL vs continuanceL vs thisL', calledL, continuanceState, this.address)
+
                     const continuanceThread = this.stateToThread(continuanceState)
+                    console.log('continuance stack')
+                    continuanceThread.dumpStack()
+                    if (options.raw) {
+                        if (typeof results !== 'number') {
+                            console.log('results', results)
+                            throw new Error('Must return a promise of a number when using raw functions')
+                        }
+                        return results
+                    }
                     if (results === undefined) {
                         return 0
                     }
@@ -245,10 +306,16 @@ export default class Thread {
 
                 // Push promise to stack as user data to be passed back to resume.
                 const promise = result.then((asyncResult: any) => {
+                    console.log('asyncResult', asyncResult)
                     results = asyncResult
                 })
 
-                this.createAndPushJsReference(promise)
+                console.log('yielding for promise')
+
+                thread.createAndPushJsReference(promise)
+
+                console.log('yieldk stack')
+                thread.dumpStack()
 
                 // Pass the continuance function as the function and the context.
                 return this.cmodule.lua_yieldk(calledL, 1, this.continuance, this.continuance)
@@ -268,9 +335,14 @@ export default class Thread {
         type: LuaType | undefined = undefined,
         options: Partial<{
             raw: boolean
+            sync: boolean
             _done: Record<string, number>
         }> = {},
     ): any {
+        // console.log('getValue', idx, type, options)
+        if (idx === 0) {
+            throw new Error('index must be non-zero')
+        }
         type = type || this.cmodule.lua_type(this.address, idx)
 
         switch (type) {
@@ -304,6 +376,7 @@ export default class Thread {
                         }
 
                         const thread = this.newThread()
+                        const threadIndex = this.getTop()
                         try {
                             const internalType = this.cmodule.lua_rawgeti(thread.address, LUA_REGISTRYINDEX, func)
                             if (internalType !== LuaType.Function) {
@@ -312,11 +385,17 @@ export default class Thread {
                             for (const arg of args) {
                                 thread.pushValue(arg)
                             }
+                            const id = Math.floor(Math.random() * 1000)
+                            console.log('jsfunc pre-enter', id, args.length, thread.getTop())
+                            thread.dumpStack()
                             const resumeResult = await thread.run(args.length)
+                            console.log('jsfunc post', id, resumeResult, thread.getTop())
                             return thread.getValues(resumeResult.resultCount)
                         } finally {
+                            console.log('jsFunc pop thread')
+                            this.dumpStack()
                             // Pop the thread
-                            this.pop(1)
+                            this.remove(threadIndex)
                         }
                     }
 
@@ -338,10 +417,22 @@ export default class Thread {
                     const referencePointer = this.cmodule.module.getValue(jsRefUserData, '*')
                     return this.cmodule.getRef(referencePointer)
                 }
+                const promiseUserData = this.cmodule.luaL_testudata(this.address, idx, LuaMetatables.Promise)
+                if (promiseUserData) {
+                    const referencePointer = this.cmodule.module.getValue(promiseUserData, '*')
+                    return this.cmodule.getRef(referencePointer)
+                }
             }
             // Fallthrough if unrecognised user data
             default:
-                console.warn(`The type '${this.cmodule.lua_typename(this.address, type)}' returned is not supported on JS`)
+                console.trace(
+                    `The type '${this.cmodule.lua_typename(this.address, type)}' / '${this.cmodule.luaL_tolstring(
+                        this.address,
+                        idx,
+                    )}' returned is not supported on JS`,
+                )
+                // Pop string to added
+                this.pop(1)
                 return new Pointer(this.cmodule.lua_topointer(this.address, idx))
         }
     }
@@ -365,7 +456,7 @@ export default class Thread {
             if (this.getTop() > 0) {
                 const error = this.cmodule.lua_tolstring(this.address, -1, undefined)
                 message += `: ${error}`
-                this.cmodule.lua_pop(this.address, 1)
+                this.pop(1)
             }
             throw new Error(message)
         }
@@ -396,7 +487,7 @@ export default class Thread {
 
             table[key] = value
 
-            this.cmodule.lua_pop(this.address, 1)
+            this.pop(1)
         }
 
         return table
@@ -408,8 +499,8 @@ export default class Thread {
         this.cmodule.module.setValue(userDataPointer, pointer, '*')
 
         if (LuaType.Nil === this.cmodule.luaL_getmetatable(this.address, LuaMetatables.FunctionReference)) {
-            // Pop the pushed nil value
-            this.cmodule.lua_pop(this.address, 1)
+            // Pop the pushed nil value and the user data
+            this.pop(2)
             throw new Error(`metatable not found: ${LuaMetatables.FunctionReference}`)
         }
 
@@ -425,8 +516,9 @@ export default class Thread {
         this.cmodule.module.setValue(userDataPointer, pointer, '*')
 
         if (LuaType.Nil === this.cmodule.luaL_getmetatable(this.address, LuaMetatables.JsReference)) {
-            // Pop the pushed nil value
-            this.cmodule.lua_pop(this.address, 1)
+            // Pop the pushed nil value and the user data
+            this.cmodule.unref(pointer)
+            this.pop(2)
             throw new Error(`metatable not found: ${LuaMetatables.FunctionReference}`)
         }
 

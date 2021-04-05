@@ -32,9 +32,11 @@ emcc \
         '_luaL_openlibs', \
         '_luaL_loadstring', \
         '_luaL_loadfilex', \
+        '_luaL_getmetafield', \
         '_lua_getglobal', \
         '_lua_tonumberx', \
         '_lua_tolstring', \
+        '_luaL_tolstring', \
         '_lua_toboolean', \
         '_lua_topointer', \
         '_lua_tothread', \
@@ -64,6 +66,7 @@ emcc \
         '_lua_resume', \
         '_lua_pushcclosure', \
         '_lua_getfield', \
+        '_lua_setfield', \
         '_luaL_newmetatable', \
         '_lua_newuserdatauv', \
         '_luaL_checkudata', \

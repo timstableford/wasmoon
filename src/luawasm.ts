@@ -36,9 +36,11 @@ export default class LuaWasm {
     public luaL_openlibs: (L: LuaState) => void
     public luaL_loadstring: (L: LuaState, code: string) => LuaReturn
     public luaL_loadfilex: (L: LuaState, filename: string, mode?: string) => LuaReturn
+    public luaL_getmetafield: (L: LuaState, index: number, name: string) => LuaType
     public lua_getglobal: (L: LuaState, name: string) => LuaType
     public lua_tonumberx: (L: LuaState, idx: number, isnum?: number) => number
     public lua_tolstring: (L: LuaState, idx: number, size?: number) => string
+    public luaL_tolstring: (L: LuaState, idx: number, size?: number) => string
     public lua_toboolean: (L: LuaState, idx: number) => boolean
     public lua_topointer: (L: LuaState, idx: number) => number
     public lua_tothread: (L: LuaState, idx: number) => number
@@ -69,6 +71,7 @@ export default class LuaWasm {
     public lua_pushcclosure: (L: LuaState, cfunction: number, n: number) => void
     public luaL_newmetatable: (L: LuaState, name: string) => boolean
     public lua_getfield: (L: LuaState, index: number, name: string) => LuaType
+    public lua_setfield: (L: LuaState, index: number, name: string) => void
     public lua_newuserdatauv: (L: LuaState, size: number, nuvalue: number) => number // pointer
     public luaL_checkudata: (L: LuaState, arg: number, name: string) => number // pointer
     public luaL_testudata: (L: LuaState, arg: number, name: string) => number | undefined | null // pointer
@@ -90,9 +93,11 @@ export default class LuaWasm {
         this.luaL_openlibs = this.module.cwrap('luaL_openlibs', null, ['number'])
         this.luaL_loadstring = this.module.cwrap('luaL_loadstring', 'number', ['number', 'string'])
         this.luaL_loadfilex = this.module.cwrap('luaL_loadfilex', 'number', ['number', 'string', 'string'])
+        this.luaL_getmetafield = this.module.cwrap('luaL_getmetafield', 'number', ['number', 'number', 'string'])
         this.lua_getglobal = this.module.cwrap('lua_getglobal', 'number', ['number', 'string'])
         this.lua_tonumberx = this.module.cwrap('lua_tonumberx', 'number', ['number', 'number', 'number'])
         this.lua_tolstring = this.module.cwrap('lua_tolstring', 'string', ['number', 'number', 'number'])
+        this.luaL_tolstring = this.module.cwrap('luaL_tolstring', 'string', ['number', 'number', 'number'])
         this.lua_toboolean = this.module.cwrap('lua_toboolean', 'boolean', ['number', 'number'])
         this.lua_topointer = this.module.cwrap('lua_topointer', 'number', ['number', 'number'])
         this.lua_tothread = this.module.cwrap('lua_tothread', 'number', ['number', 'number'])
@@ -138,6 +143,7 @@ export default class LuaWasm {
         this.lua_pushcclosure = this.module.cwrap('lua_pushcclosure', null, ['number', 'number', 'number'])
         this.luaL_newmetatable = this.module.cwrap('luaL_newmetatable', 'boolean', ['number', 'string'])
         this.lua_getfield = this.module.cwrap('lua_getfield', 'number', ['number', 'number', 'string'])
+        this.lua_setfield = this.module.cwrap('lua_setfield', null, ['number', 'number', 'string'])
         this.lua_newuserdatauv = this.module.cwrap('lua_newuserdatauv', 'number', ['number', 'number', 'number'])
         this.luaL_checkudata = this.module.cwrap('luaL_checkudata', 'number', ['number', 'number', 'string'])
         this.luaL_testudata = this.module.cwrap('luaL_testudata', 'number', ['number', 'number', 'string'])
